@@ -31,7 +31,8 @@ Maestro-AMD/
 ├── start_latest.js         ← "Update & Start" one-click
 ├── reset.js                ← rm -rf Maestro/
 ├── launcher_profile.js     ← AMD GPU detection + runtime profile
-├── patch_fsdp.py           ← idempotent source patch, see "Known runtime issues" #1
+├── sitecustomize.py        ← copied into venv site-packages, see "Known runtime issues" #1
+├── install_sitecustomize.py← the copier itself, called from install.js/update.js
 ├── ensure_ffmpeg.py        ← provisions ffmpeg/ffprobe, see #3/#4
 ├── CLAUDE.md               ← this file
 ├── README.md               ← user-facing (short)
@@ -143,11 +144,15 @@ For the async-export files (install/torch/start/update),
 `node --check` catches parse errors but not runtime issues in the
 returned config object. Test the runtime path via Pinokio.
 
-`patch_fsdp.py` and `ensure_ffmpeg.py` are plain Python — check with
-`python -m py_compile patch_fsdp.py ensure_ffmpeg.py` using the same
-`env-amd` venv install.js/update.js invoke them with, then actually run
-them against a real `Maestro/` clone (both are idempotent and safe to
-re-run) before trusting a change to either.
+`sitecustomize.py`, `install_sitecustomize.py`, and `ensure_ffmpeg.py`
+are plain Python — check with
+`python -m py_compile sitecustomize.py install_sitecustomize.py ensure_ffmpeg.py`
+using the same `env-amd` venv install.js/update.js invoke them with, then
+actually run them against a real `Maestro/` clone (all are idempotent and
+safe to re-run) before trusting a change to any. For `sitecustomize.py`
+in particular, verify by starting a fresh Python interpreter in the venv
+and checking `'torch.distributed.fsdp' in sys.modules` — it must be
+`True` before any user code runs.
 
 ## Known runtime issues & fixes (first bring-up, RX 7900 XTX / Windows, Aug 2026)
 
@@ -174,67 +179,87 @@ chain crashes, taking the whole app down for a code path nothing uses.
 Confirmed this isn't ROCm-specific in principle — any PyTorch build without
 a working distributed backend would hit it.
 
-**Fix — now automated, `patch_fsdp.py`.** Guards the import and resolves
-`sharding_strategy`'s default at call time instead of def time (the default
-`ShardingStrategy.FULL_SHARD` would itself crash at import if evaluated
-eagerly while `ShardingStrategy` is `None`):
+**Fix — automated, `sitecustomize.py` + `install_sitecustomize.py`.** Zero
+modification to Maestro's tree. `install_sitecustomize.py` (invoked by
+`install.js`/`update.js` after every clone/reset) drops
+`sitecustomize.py` into the venv's `site-packages` — a filename CPython
+auto-loads at every interpreter startup, before any user code runs. It
+preemptively writes fake `torch.distributed.fsdp` and
+`torch.distributed.fsdp.wrap` modules to `sys.modules`. When Maestro's
+`from torch.distributed.fsdp import ...` runs later, Python finds our
+fakes in the module cache and skips loading the real crashing module
+entirely.
 
-```python
-try:
-    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-    from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
-    from torch.distributed.fsdp.wrap import lambda_auto_wrap_policy
-except Exception:
-    FSDP = MixedPrecision = ShardingStrategy = lambda_auto_wrap_policy = None
+The fake exposes exactly what Maestro reads at def time
+(`ShardingStrategy.FULL_SHARD`, plus callable placeholders for `FSDP`,
+`MixedPrecision`, `lambda_auto_wrap_policy`). Anything actually invoked
+raises a clear `RuntimeError` — never happens on the single-GPU path,
+because `shard_model()` is never called.
 
-def shard_model(..., sharding_strategy=None, ...):
-    if FSDP is None:
-        raise RuntimeError("FSDP sharding is unavailable: ...")
-    if sharding_strategy is None:
-        sharding_strategy = ShardingStrategy.FULL_SHARD
-    ...
-```
+Lives in the venv, so **Update preserves it for free** — no source patch
+to reapply, no `git reset --hard` interaction. Only a `Reset` (which
+wipes the whole `Maestro/` folder, venv included) would require redoing
+it; `install.js` handles that on the next Install.
 
-`patch_fsdp.py` (this wrapper repo, not Maestro's tree — see "Do not
-vendor" above) applies this to `Maestro/app/models/wan/distributed/fsdp.py`
-after every clone/reset. It's **idempotent and self-detecting**: a marker
-comment makes a second run a no-op, and if the target file's content
-doesn't exactly match what it expects (upstream changed the file — maybe
-even fixed this properly), it skips and logs instead of touching anything.
-`install.js` runs it right after the `git clone`; `update.js` runs it right
-after `git reset --hard` (which wipes it, same as any local edit to a
-tracked file — that's *why* it has to rerun every time, not a one-off).
+**Earlier approaches, why abandoned:**
 
-This was deliberately **not** solved via a runtime monkeypatch (e.g. a
-`sitecustomize.py` stubbing `sys.modules['torch.distributed.fsdp']`) even
-though that would avoid touching Maestro's file at all — see #2 below for
-why that path is unsafe on this specific PyTorch build. A source-level
-patch was the only approach verified safe.
+- A **source patch** to `Maestro/app/models/wan/distributed/fsdp.py`
+  (was the first version here — see git history for `patch_fsdp.py`).
+  Works, but has to re-apply after every `git reset --hard` in
+  `update.js` (since that wipes any local edit to a tracked file), and
+  it modifies Maestro's tree which is against the wrapper's design
+  principle ("Do not vendor upstream" above). `sitecustomize.py`
+  achieves the same result without touching Maestro at all.
+- A **runtime import probe** (e.g. `sitecustomize.py` that did `try:
+  import torch.distributed.fsdp` to decide whether to install the stub).
+  That was tried first here and can trigger a runaway subprocess storm —
+  see #2 below. **`sitecustomize.py` must NEVER import
+  `torch.distributed.fsdp` or anything that transitively runs it** —
+  write to `sys.modules` unconditionally instead.
+- `sys.modules['torch.distributed.fsdp'] = None`. That signals to
+  Python's import machinery that the module doesn't exist and turns
+  future `from torch.distributed.fsdp import X` into `ImportError`,
+  which Maestro doesn't handle. A fully-populated fake module is what
+  actually works.
 
-Filed upstream too: issue drafted against Blizaine/Maestro with this exact
-root cause + fix (not auto-submitted — GitHub issues need the reporter's
-own account). **If it's merged when you read this, delete `patch_fsdp.py`
-and its call sites in `install.js`/`update.js`** — the guard becomes
-redundant (harmless either way, since it self-detects and no-ops, but dead
-weight).
+Filed upstream too: issue drafted against Blizaine/Maestro with the root
+cause + fix (not auto-submitted — GitHub issues need the reporter's own
+account). **If it's merged when you read this, delete
+`sitecustomize.py`, `install_sitecustomize.py`, and their call sites in
+`install.js`/`update.js`** — the shadow shadows the *fixed* module too,
+which is a real (if minor) footgun for anyone who ever wants working
+multi-GPU FSDP downstream.
 
-### 2. Do NOT try to make `torch.distributed` actually work here
+### 2. Do NOT let `torch.distributed.fsdp/__init__.py` run on this build
 
-Investigated whether initializing `torch.distributed` properly (instead of
-just guarding around the missing import) could work around issue #1.
-**It can trigger a runaway subprocess storm** — hundreds of
-`offload-arch.exe`/`python.exe` processes spawned in a loop, confirmed
-twice with wildly different severity from identical code, including one
-case where a watchdog killed the first wave but a second, larger wave
-followed from the same still-running root process. This is a race/bug in
-AMD's ROCm/TheRock Windows toolchain (`offload-arch` is a Python
-console-script invoked via subprocess for HIP arch detection; see
+Any code that causes `torch.distributed.fsdp/__init__.py` to execute on
+this ROCm-for-Windows nightly wheel can trigger a runaway subprocess
+storm — hundreds of `offload-arch.exe`/`python.exe` processes spawned in
+a loop, confirmed twice with wildly different severity from identical
+code, including one case where a watchdog killed the first wave but a
+second, larger wave followed from the same still-running root process.
+This is a race/bug in AMD's ROCm/TheRock Windows toolchain
+(`offload-arch` is a Python console-script invoked via subprocess for HIP
+arch detection; see
 [ROCm/TheRock#3262](https://github.com/ROCm/TheRock/issues/3262) and
-[#5003](https://github.com/ROCm/TheRock/issues/5003)), not anything in this
-repo. **Never add code that imports/touches `torch.distributed` beyond the
-bare guarded probe above.** If you're debugging something in this area,
-run with a process-count watchdog first (kill-on-threshold loop for
-`offload-arch.exe`) before testing anything live.
+[#5003](https://github.com/ROCm/TheRock/issues/5003)), not anything in
+this repo.
+
+The fix in issue #1 preempts this by shadowing `torch.distributed.fsdp`
+in `sys.modules` *before* the real `__init__.py` can run. That's the safe
+shape. Concretely, do not:
+
+- `import torch.distributed.fsdp` (obvious).
+- Import anything under `torch.distributed.fsdp.*` (submodule access
+  triggers parent import).
+- Call `torch.distributed.is_available()` — probably safe (the module
+  import itself is), but if you must, guard with a process-count
+  watchdog primed first (a continuous kill-on-threshold loop against
+  `offload-arch.exe`, not a one-shot).
+
+If you're debugging in this area, prime a continuous watchdog first —
+one-shot watchdogs have been observed to miss follow-on waves. See git
+history for `scratchpad/watchdog2.ps1` if a template is useful.
 
 ### 3. UI warning: "ffmpeg not found in path"
 
@@ -297,8 +322,8 @@ to fetch something, follow the same pattern.
   bundled CA list) for downloads in this repo's helper scripts — shell out
   to `curl` instead. See "Known runtime issues" #3/#4 for the observed
   failure.
-- Do not work around a broken/unavailable Python import by touching
-  `torch.distributed` further (e.g. a `sitecustomize.py` stub that probes
-  or imports it) — see "Known runtime issues" #2. A source-level guard
-  (like `patch_fsdp.py`) is the only verified-safe shape for this class of
-  problem.
+- Do not, in `sitecustomize.py` or anywhere else, `import
+  torch.distributed.fsdp` (or anything under it, or anything that
+  transitively runs its `__init__.py`) — see "Known runtime issues" #2.
+  The current fix writes to `sys.modules` unconditionally without
+  probing; that's the only verified-safe shape.

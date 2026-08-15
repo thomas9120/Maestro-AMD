@@ -33,20 +33,24 @@ module.exports = async (kernel) => {
           message: "git clone https://github.com/Blizaine/Maestro Maestro",
         },
       },
-      // Local, self-detecting patch for a known upstream bug: an
-      // unconditional, unused FSDP import crashes any PyTorch build
-      // without a working torch.distributed backend (e.g. this ROCm
-      // Windows wheel). Idempotent — no-ops if already patched or if
-      // upstream's file no longer matches what it expects, so an
-      // upstream change (including upstream fixing this properly) can
-      // never corrupt the file. See CLAUDE.md "Known runtime issues" #1.
+      // Preemptively shadow torch.distributed.fsdp for a known upstream
+      // bug: Maestro's models/wan/distributed/fsdp.py imports FSDP
+      // unconditionally, and on PyTorch builds without a working
+      // torch.distributed backend (e.g. this ROCm Windows wheel) that
+      // crashes the whole app at import time for a code path that's
+      // never called. Drops a sitecustomize.py into the venv's
+      // site-packages so CPython auto-loads it at every interpreter
+      // startup and shadows the module before Maestro's own imports run.
+      // Lives in the venv, so it survives Update (unlike a source patch,
+      // which git reset --hard would wipe). See CLAUDE.md "Known runtime
+      // issues" #1.
       {
         method: "shell.run",
         params: {
           venv: runtime.env,
           venv_python: runtime.python,
           path: ".",
-          message: "python patch_fsdp.py",
+          message: "python install_sitecustomize.py",
         },
       },
       {

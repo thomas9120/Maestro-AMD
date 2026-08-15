@@ -18,16 +18,16 @@ module.exports = async (kernel) => {
           ],
         },
       },
-      // `git reset --hard` above wipes any local patch, so reapply it —
-      // idempotent/self-detecting, see install.js and CLAUDE.md "Known
-      // runtime issues" #1.
+      // Re-copy sitecustomize.py in case Reset (or the user) blew away
+      // the venv -- see install.js and CLAUDE.md "Known runtime issues"
+      // #1. Cheap; overwrites in place.
       {
         method: "shell.run",
         params: {
           venv: runtime.env,
           venv_python: runtime.python,
           path: ".",
-          message: "python patch_fsdp.py",
+          message: "python install_sitecustomize.py",
         },
       },
       // Python deps may have moved between upstream commits.
