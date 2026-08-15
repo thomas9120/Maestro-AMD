@@ -1,3 +1,7 @@
+# Python (patch_fsdp.py / ensure_ffmpeg.py)
+__pycache__/
+*.pyc
+
 # Logs
 logs
 *.log
@@ -141,3 +145,4 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+/ChooseClaudeCode.bat

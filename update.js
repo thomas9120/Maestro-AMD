@@ -18,6 +18,18 @@ module.exports = async (kernel) => {
           ],
         },
       },
+      // `git reset --hard` above wipes any local patch, so reapply it —
+      // idempotent/self-detecting, see install.js and CLAUDE.md "Known
+      // runtime issues" #1.
+      {
+        method: "shell.run",
+        params: {
+          venv: runtime.env,
+          venv_python: runtime.python,
+          path: ".",
+          message: "python patch_fsdp.py",
+        },
+      },
       // Python deps may have moved between upstream commits.
       {
         method: "shell.run",
@@ -29,6 +41,17 @@ module.exports = async (kernel) => {
             "uv pip install -r requirements.txt --index-strategy unsafe-best-match",
             "uv pip install hf-xet pip",
           ],
+        },
+      },
+      // Cheap no-op once already provisioned — see CLAUDE.md "Known
+      // runtime issues" #3/#4.
+      {
+        method: "shell.run",
+        params: {
+          venv: runtime.env,
+          venv_python: runtime.python,
+          path: ".",
+          message: "python ensure_ffmpeg.py",
         },
       },
       // Skip the multi-GB ROCm wheel reinstall unless the marker is

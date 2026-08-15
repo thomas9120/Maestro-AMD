@@ -33,6 +33,22 @@ module.exports = async (kernel) => {
           message: "git clone https://github.com/Blizaine/Maestro Maestro",
         },
       },
+      // Local, self-detecting patch for a known upstream bug: an
+      // unconditional, unused FSDP import crashes any PyTorch build
+      // without a working torch.distributed backend (e.g. this ROCm
+      // Windows wheel). Idempotent — no-ops if already patched or if
+      // upstream's file no longer matches what it expects, so an
+      // upstream change (including upstream fixing this properly) can
+      // never corrupt the file. See CLAUDE.md "Known runtime issues" #1.
+      {
+        method: "shell.run",
+        params: {
+          venv: runtime.env,
+          venv_python: runtime.python,
+          path: ".",
+          message: "python patch_fsdp.py",
+        },
+      },
       {
         method: "shell.run",
         params: {
@@ -43,6 +59,20 @@ module.exports = async (kernel) => {
             "uv pip install -r requirements.txt --index-strategy unsafe-best-match",
             "uv pip install hf-xet pip",
           ],
+        },
+      },
+      // Ensure ffmpeg/ffprobe are on PATH. imageio-ffmpeg (a real
+      // dependency) bundles its own ffmpeg but not under the plain name,
+      // and ships no ffprobe at all — several other dependencies shell
+      // out to literal `ffmpeg`/`ffprobe` commands. See CLAUDE.md "Known
+      // runtime issues" #3/#4.
+      {
+        method: "shell.run",
+        params: {
+          venv: runtime.env,
+          venv_python: runtime.python,
+          path: ".",
+          message: "python ensure_ffmpeg.py",
         },
       },
       {
