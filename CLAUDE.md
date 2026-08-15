@@ -91,7 +91,9 @@ Pinned in `torch.js`. Bump procedure:
 
 Skipped intentionally (all CUDA-only, no ROCm equivalent): SageAttention,
 FlashAttention, triton-windows, nunchaku, lightx2v, xformers. WanGP's
-built-in PyTorch SDPA path handles attention on AMD.
+built-in PyTorch SDPA path handles attention on AMD — but see "Known
+runtime issues" #5: SDPA needs an env var set at launch or it silently
+picks the OOM-prone fallback kernel.
 
 ## How updates work
 
@@ -303,6 +305,36 @@ shells out to `curl` for the download and only uses Python's stdlib
 `zipfile` (pure local file I/O, no TLS involved) to extract — no
 `requests`, no extra pip dependency. If you add another script that needs
 to fetch something, follow the same pattern.
+
+### 5. OOM crash on generation: `HIP out of memory. Tried to allocate 92.55 GiB`
+
+**Symptom:** generation starts, runs the progress bar for a while, then
+crashes mid-denoising inside `F.scaled_dot_product_attention` with a HIP
+OOM error requesting far more memory than the GPU has (tens of GB on a
+24GB card), on models/settings with a large packed sequence length (long
+videos, high frame counts, large resolutions).
+
+**Root cause:** PyTorch's SDPA has three backends — Flash Attention,
+Memory-Efficient Attention, and Math (naive fallback). On this ROCm
+nightly, Flash and Memory-Efficient are implemented via AOTriton but
+gated behind `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` (unset by
+default → both report "runtime disabled" and PyTorch silently falls back
+to Math). Math materializes the **full O(n²) attention matrix** — at
+Maestro's typical packed sequence lengths (tens of thousands of tokens
+for a multi-second video) that's tens to hundreds of GB, far past any
+consumer card. Confirmed live: the exact sequence length from a real
+crash (21,063 rows) needed 92.55 GiB under Math; under Flash or
+Memory-Efficient (same GPU, same shapes, env var set) peak usage was
+under 150MB.
+
+**Fix — `start.js` sets `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL: "1"`**
+in the env passed to `python launch.py`. Zero Maestro modification — it's
+a PyTorch/ROCm runtime flag read at kernel-selection time, nothing
+Maestro's code touches. "Experimental" per AMD's own warning, but the
+alternative today is a guaranteed OOM on realistic generation lengths, so
+enabling it is the correct default for a video-gen app. If AMD
+stabilizes/defaults this in a future ROCm build, this becomes a no-op and
+can be left in place or removed.
 
 ## Do not
 

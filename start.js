@@ -22,7 +22,15 @@ module.exports = async (kernel) => {
         params: {
           venv: runtime.env,
           venv_python: runtime.python,
-          env: { SERVER_PORT: port },
+          // Without this, PyTorch's SDPA silently falls back to the naive
+          // "math" attention kernel on this ROCm build (flash/mem-efficient
+          // are implemented via AOTriton but gated as experimental) -- the
+          // math kernel materializes the full O(n^2) attention matrix,
+          // which OOMs on anything but tiny sequence lengths (confirmed:
+          // 92GB requested for a 21K-token attention call that flash/
+          // mem-efficient handle in under 150MB). See CLAUDE.md "Known
+          // runtime issues" #5.
+          env: { SERVER_PORT: port, TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL: "1" },
           path: "Maestro/app",
           message: ["python launch.py"],
           on: [
