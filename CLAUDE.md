@@ -336,6 +336,51 @@ enabling it is the correct default for a video-gen app. If AMD
 stabilizes/defaults this in a future ROCm build, this becomes a no-op and
 can be left in place or removed.
 
+### 6. System hang (not just a crash) when generating with MiniMax H3
+
+**Symptom:** loading a MiniMax H3 model (Omni, First/Last, Full, etc.)
+shows heavy disk activity and near-zero GPU usage during text-encoder /
+token-decoding, then generation freezes at step 0 and the entire OS
+becomes unresponsive — no clean recovery short of a hard reset.
+
+**Root cause:** every MiniMax H3 variant's text encoder defaults to
+**NVFP4 AWQ** — an NVIDIA-only quantization format — regardless of GPU
+vendor, and the UI labels it "(Recommended)". On AMD there's no kernel
+for it, so PyTorch silently falls back to running the 32B-parameter
+Qwen3-VL text encoder on **CPU**. Combined with mmgp's partial-pinning /
+async-disk-shuttle offload path for the ~20B transformer (visible in the
+console as `Switching to partial pinning...` and `Async loading plan...`
+messages), this creates simultaneous heavy disk I/O + heavy RAM pressure
+right as generation starts — enough to push Windows itself into paging
+its own working set to disk, which is what actually causes the hang
+(not just Maestro, the OS scheduler starves too).
+
+Traced the "(Recommended)" mislabel to a real upstream logic gap in
+`models/minimax_h3/minimax_h3_handler.py`'s `_recommend_text_encoder()`:
+the first `nvfp4_awq` branch correctly checks
+`hardware.get("supports_nvfp4")`, but a second `nvfp4_awq` fallback
+branch (`if "nvfp4_awq" in choices and ram_gb >= 24`) does not — so any
+machine with ≥24GB RAM (AMD included) still lands on NVFP4 regardless of
+actual hardware support.
+
+**Fix — user-facing, not wrapper-automatable.** This is a per-generation
+UI setting inside Maestro itself (`minimax_h3_text_encoder`, exposed in
+the React UI's Advanced Settings as **"H3 Text Encoder"**), not something
+`install.js`/`torch.js` touches — there's nothing for the AMD wrapper to
+patch here. Documented in README.md's "Before using MiniMax H3" section
+for users: switch the dropdown from NVFP4 AWQ to **GGUF Q4_K_M** (or
+**GGUF Q2_K** for less RAM). Both run correctly on CPU without the
+NVFP4-specific fallback path's memory profile.
+
+Separately, **Settings → Services → LLM Device: CPU** (the Director
+planning LLM's device) is correct for every user regardless of GPU
+vendor — it's not an AMD-specific fix, just worth confirming it's set
+since GPU contention compounds the H3 problem above.
+
+Worth filing upstream (the missing `supports_nvfp4` check in the second
+branch): would fix the mislabeled "(Recommended)" on any non-NVFP4-capable
+hardware, not just AMD.
+
 ## Do not
 
 - Do not vendor upstream Maestro source files into this repo (that was

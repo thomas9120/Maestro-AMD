@@ -110,6 +110,30 @@ Windows and Linux are both supported. macOS is not (ROCm doesn't run there).
   full model collection across every feature exceeds 300 GB. Nothing
   downloads until you actually pick a model to use.
 
+### ⚠️ Before using MiniMax H3: change one setting or risk a system hang
+
+Maestro's **MiniMax H3** models (Omni, First/Last, Full, etc.) default to an
+**NVFP4** text encoder — an NVIDIA-only format, despite being labeled
+"Recommended" in the UI. On AMD there's no GPU kernel for it, so it silently
+falls back to running a 32-billion-parameter model on your **CPU**. Combined
+with how much RAM the rest of the model needs, this can push your system into
+heavy memory-swap territory — bad enough that Windows itself becomes
+unresponsive and won't recover without a hard reset. This isn't something the
+AMD wrapper can fix for you automatically — it's a per-generation setting
+inside Maestro itself.
+
+**Fix — do this once before your first MiniMax H3 generation:**
+
+1. Select any MiniMax H3 model, then open **Advanced Settings**.
+2. Find **"H3 Text Encoder"** and change it from **NVFP4 AWQ (Recommended)**
+   to **GGUF Q4_K_M** (or **GGUF Q2_K** if you're tight on RAM). The
+   "Recommended" label doesn't account for AMD GPUs — GGUF is the one that
+   actually runs correctly here.
+3. In **Settings → Services**, leave **LLM Device** set to **CPU** — that's
+   the correct choice for everyone (not AMD-specific), since it keeps the
+   local Director planning LLM off your GPU so it doesn't compete with video
+   generation for VRAM.
+
 ## Installing
 
 1. Install [Pinokio](https://pinokio.computer) if you don't already have it.
