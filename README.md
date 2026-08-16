@@ -148,6 +148,22 @@ This wrapper (the Pinokio scripts in this repository) doesn't modify or
 redistribute any of that — it just automates fetching and running the
 official Maestro release on AMD hardware.
 
+## Credits
+
+- **[Maestro](https://github.com/Blizaine/Maestro)**, by **Blizaine**, is
+  the actual application. Everything creative you do in this app — every
+  model, every mode, every feature described above — is Maestro's work.
+  This repository is just an installer that points it at an AMD GPU
+  instead of an NVIDIA one; all credit for the app itself belongs upstream.
+- **[wan2gp-amd](https://github.com/6Morpheus6/wan2gp-amd)**, by
+  **6Morpheus6**, is where the idea for *how* to do that porting came from.
+  Its "clone the upstream app at install time instead of forking it"
+  pattern for bringing a CUDA-only Pinokio app to AMD via ROCm is the
+  approach this whole wrapper is built on.
+
+If you find this useful, consider starring both of those projects — this
+one exists because of their work.
+
 ---
 
 ## For developers
