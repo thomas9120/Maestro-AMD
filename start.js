@@ -30,7 +30,21 @@ module.exports = async (kernel) => {
           // 92GB requested for a 21K-token attention call that flash/
           // mem-efficient handle in under 150MB). See CLAUDE.md "Known
           // runtime issues" #5.
-          env: { SERVER_PORT: port, TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL: "1" },
+          //
+          // The four MIOpen/HIP vars below match wan2gp-amd's start.js --
+          // same ROCm nightly lineage, ported over for parity: expandable
+          // segments to cut allocator fragmentation stalls, MIOpen fast
+          // kernel-selection instead of exhaustive autotuning, and SDMA
+          // disabled to sidestep a known ROCm copy-engine slowdown/hang on
+          // some driver builds.
+          env: {
+            SERVER_PORT: port,
+            TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL: "1",
+            PYTORCH_HIP_ALLOC_CONF: "expandable_segments:True",
+            HSA_ENABLE_SDMA: "0",
+            MIOPEN_FIND_MODE: "FAST",
+            MIOPEN_DISABLE_CACHE: "1",
+          },
           path: "Maestro/app",
           message: ["python launch.py"],
           on: [
