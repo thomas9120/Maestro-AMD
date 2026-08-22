@@ -34,6 +34,7 @@ Maestro-AMD/
 ├── sitecustomize.py        ← copied into venv site-packages, see "Known runtime issues" #1
 ├── install_sitecustomize.py← the copier itself, called from install.js/update.js
 ├── ensure_ffmpeg.py        ← provisions ffmpeg/ffprobe, see #3/#4
+├── test_gpu_detection.js   ← unit tests for launcher_profile/torch.js detection logic
 ├── CLAUDE.md               ← this file
 ├── README.md               ← user-facing (short)
 └── Maestro/                ← upstream clone (created by install.js)
@@ -52,11 +53,13 @@ upstream, which is why `git pull` on update naturally preserves it.
 ## AMD GPU support
 
 `launcher_profile.js` is the **single source of truth** for what's
-supported. Adding a GPU family means editing two places together:
+supported. Adding a GPU family means editing three places together:
 
 1. Add a helper (`isAmdFoo`) in `launcher_profile.js`.
-2. Add a `when`-gated `shell.run` step in `torch.js` with the correct
-   ROCm wheel index for that target.
+2. Add the family's gfx targets to `WIN_WHEEL_INDEXES` in `torch.js`
+   (and the fallback table `GPU_NAME_TARGETS` in `launcher_profile.js`
+   if Pinokio's own detection can't name them — see "GPU detection").
+3. Add matching assertions in `test_gpu_detection.js`.
 
 Currently supported (confirmed August 2026):
 
@@ -83,8 +86,9 @@ Pinned in `torch.js`. Bump procedure:
 - **Windows (nightly)** — unpinned by design. Pulled from
   `https://rocm.nightlies.amd.com/v2-staging/<target>` at install time.
   If AMD reorganizes their v2-staging tree (new/removed target
-  directories), update the `winWheel` calls in `torch.js` and the
-  helper regexes in `launcher_profile.js` together. Cross-check against
+  directories), update `WIN_WHEEL_INDEXES` in `torch.js`, the helper
+  regexes in `launcher_profile.js`, and `test_gpu_detection.js`
+  together. Cross-check against
   <https://rocm.nightlies.amd.com/v2-staging/>.
 - **Python** — 3.11. ROCm wheels do not ship cp310 builds. Do not
   downgrade.
@@ -94,6 +98,44 @@ FlashAttention, triton-windows, nunchaku, lightx2v, xformers. WanGP's
 built-in PyTorch SDPA path handles attention on AMD — but see "Known
 runtime issues" #5: SDPA needs an env var set at launch or it silently
 picks the OOM-prone fallback kernel.
+
+## GPU detection
+
+`torch.js` needs a GFX target to pick the Windows wheel index. Pinokio
+exposes one (`gpu_target` in the template environment, `kernel.gpu_target`
+in JS), resolved by pinokiod's `kernel/gpu/amd_gfx_targets.json` name
+table. **That table is incomplete for real device names** — verified
+August 2026, pinokiod 8.0.40 and 8.0.118 alike:
+
+- Strix Halo APUs on Windows report their iGPU as
+  `AMD Radeon(TM) 8060S Graphics`. The trailing "Graphics" (Windows'
+  convention for APU iGPU display names) defeats pinokiod's exact-match
+  lookup: the table has `radeon 8060s` but not `radeon 8060s graphics`,
+  and pinokiod's CPU-brand fallback only fires for the literal string
+  "radeon graphics". Result: `gpu_target = null`.
+- pinokiod 8.0.118's new PCI-ID fallback (`amd_pci_targets.json`) also
+  misses Strix Halo: device `1002:1586` is not in its table.
+
+With `gpu_target` null, the original template-`when`-gated `torch.js`
+skipped **every** wheel-install step and exited at the "unsupported"
+notify, never writing the runtime marker — which surfaces to the user as
+"AMD ROCm runtime not installed" at Start. The author's reference
+machine was an RX 7900 XTX dGPU, whose WMI name carries no trailing
+"Graphics", which is why this shipped undetected.
+
+**Fix — `resolveGpuTarget()` in `launcher_profile.js`.** Trusts Pinokio's
+`gpu_target` when it's a valid gfx id; otherwise resolves from the raw
+`kernel.gpu_model` / `kernel.gpus[*].model` strings via the
+`GPU_NAME_TARGETS` fallback table (APU iGPU names first, then dGPU
+family patterns). `torch.js` calls it in JS and builds its run steps
+from the resolved target — the template `gpu_target` variable is no
+longer load-bearing. `isAmdRdna2/3/4` and `isAmdApu` route through the
+same resolver, so they work on affected machines too.
+
+If pinokiod ever fixes its tables, `resolveGpuTarget` keeps working
+unchanged (it prefers Pinokio's answer). Keep `GPU_NAME_TARGETS` in sync
+with `WIN_WHEEL_INDEXES` in `torch.js` and with the supported-family
+table above. Unit tests in `test_gpu_detection.js`.
 
 ## How updates work
 
@@ -140,7 +182,13 @@ node --check update.js
 node --check start_latest.js
 node --check reset.js
 node --check launcher_profile.js
+node --check test_gpu_detection.js
 ```
+
+`test_gpu_detection.js` exercises `resolveGpuTarget` (including the
+Strix Halo failing-machine profile) and the `torch.js` step shapes for
+supported/unsupported/unknown targets on both platforms. Run it after
+touching either file: `node test_gpu_detection.js`.
 
 For the async-export files (install/torch/start/update),
 `node --check` catches parse errors but not runtime issues in the
