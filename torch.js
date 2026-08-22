@@ -49,13 +49,16 @@ module.exports = async (kernel) => {
   const gpuTarget = resolveGpuTarget(kernel)
   const isWin = kernel.platform === "win32"
 
+  // venv/venv_python/path come from install.js/update.js's script.start
+  // params. `path` MUST resolve to the runtime venv's directory —
+  // Pinokio resolves `venv` relative to it (see launcher_profile.js).
   const winWheel = (indexUrl) => ({
     method: "shell.run",
     params: {
       env: { UV_SKIP_WHEEL_FILENAME_CHECK: "1" },
       venv: "{{args && args.venv ? args.venv : null}}",
       venv_python: "{{args && args.venv_python ? args.venv_python : null}}",
-      path: "{{args && args.path ? args.path : '.'}}",
+      path: `{{args && args.path ? args.path : '${runtime.path}'}}`,
       message: `uv pip install --pre torch torchvision torchaudio --index-url ${indexUrl} --force-reinstall`,
     },
   })
@@ -88,7 +91,7 @@ module.exports = async (kernel) => {
     params: {
       venv: "{{args && args.venv ? args.venv : null}}",
       venv_python: "{{args && args.venv_python ? args.venv_python : null}}",
-      path: "{{args && args.path ? args.path : '.'}}",
+      path: `{{args && args.path ? args.path : '${runtime.path}'}}`,
       message: "uv pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/rocm7.2 --force-reinstall",
     },
   }] : []

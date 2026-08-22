@@ -91,9 +91,19 @@ const isAmdApu = (kernel = {}) =>
 // Windows uses per-gfx-target nightly wheels; Linux uses the stable
 // rocm7.2 index. Python 3.11 required (ROCm wheels do not ship cp310
 // builds).
+//
+// Venv layout pitfall: Pinokio resolves the `venv` param RELATIVE TO
+// the step's `path` (pinokiod shell.js: env_path =
+// path.resolve(params.path, params.venv)). Every step that touches the
+// venv — including helper scripts that live in the wrapper root — MUST
+// use path: runtime.path, and invoke its script by absolute path (see
+// install.js/update.js). Using path: "." instead creates a stray venv
+// at the app root, and the real venv never receives sitecustomize.py
+// or ffmpeg — the exact failure behind the FSDP import crash on Start.
 const amdRuntimeProfile = () => ({
   env: "env-amd",
   python: "3.11",
+  path: "Maestro/app",
   marker: "Maestro/app/env-amd/.maestro_amd_v1.installed",
   label: "AMD ROCm",
 })

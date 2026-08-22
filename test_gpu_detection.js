@@ -84,6 +84,13 @@ assert.strictEqual(isAmdApu(kernelStrixHalo), true, "isAmdApu via fallback")
   assert.strictEqual(shellSteps.length, 1, "exactly one wheel install step")
   assert.ok(shellSteps[0].params.message.includes("rocm.nightlies.amd.com/v2-staging/gfx1151"), "gfx1151 index")
   assert.strictEqual(shellSteps[0].params.env.UV_SKIP_WHEEL_FILENAME_CHECK, "1")
+  // Venv-path contract: the wheel step's `path` template must fall back
+  // to the runtime venv dir (Maestro/app), never ".". Pinokio resolves
+  // `venv` relative to `path`; a "." fallback would recreate the stray
+  // app-root venv bug. The literal must be baked in at build time since
+  // template memory has no `runtime` binding.
+  assert.ok(shellSteps[0].params.path.includes("'Maestro/app'"), "win wheel path falls back to runtime venv dir")
+  assert.ok(!shellSteps[0].params.path.includes("runtime.path"), "no unresolved JS identifier left in template")
   assert.strictEqual(steps[steps.length - 1].method, "fs.write", "marker last")
 
   cfg = await torchConfig(kernelPinokioWorks)
@@ -103,6 +110,7 @@ assert.strictEqual(isAmdApu(kernelStrixHalo), true, "isAmdApu via fallback")
   assert.strictEqual(linuxShell.length, 1)
   assert.ok(linuxShell[0].params.message.includes("download.pytorch.org/whl/rocm7.2"), "linux stable index")
   assert.ok(linuxShell[0].params.message.includes("torch==2.11.0"), "linux pinned versions")
+  assert.ok(linuxShell[0].params.path.includes("'Maestro/app'"), "linux path falls back to runtime venv dir")
 
   console.log("ALL TESTS PASSED")
 })().catch((e) => { console.error("TEST FAILED:", e.message); process.exit(1) })

@@ -137,6 +137,37 @@ unchanged (it prefers Pinokio's answer). Keep `GPU_NAME_TARGETS` in sync
 with `WIN_WHEEL_INDEXES` in `torch.js` and with the supported-family
 table above. Unit tests in `test_gpu_detection.js`.
 
+## Venv layout pitfall (`path` resolves `venv`)
+
+Pinokio resolves the `venv` param **relative to a step's `path`**
+(pinokiod `kernel/shell.js`: `env_path = path.resolve(params.path,
+params.venv)`). This has one load-bearing consequence: **every step that
+touches the venv must use `path: runtime.path` (`Maestro/app`)**, or
+Pinokio activates/creates a different venv at whatever directory you
+named instead.
+
+The pre-fix wrapper ran the two root-level helper scripts
+(`install_sitecustomize.py`, `ensure_ffmpeg.py`) with `path: "."`. That
+created a stray `env-amd` at the **app root**, and `sitecustomize.py` +
+`ffmpeg`/`ffprobe` landed there — while the real runtime venv at
+`Maestro/app/env-amd` (used by `torch.js` and `start.js`, which correctly
+use `path: "Maestro/app"`) never got the FSDP shadow. Result: `launch.py`
+crashed on the `torch.distributed.fsdp` import — the exact symptom of
+Known runtime issue #1, despite the fix being "installed".
+
+**Fix.** Helper steps now use `path: runtime.path` and invoke the helper
+by absolute path (`python "${__dirname}/install_sitecustomize.py"`), so
+the venv stays the runtime one while the script still resolves from the
+wrapper root. `reset.js` also removes the stray root `env-amd` so a Reset
+returns to a truly clean state. `runtime.path` is baked into the
+`torch.js` wheel-step `path` templates as a literal (`'${runtime.path}'`)
+because Pinokio template memory has no `runtime` binding — an unresolved
+`runtime.path` in a template is a bug, and the unit test asserts it never
+appears.
+
+If you add a new venv-touching step, `path: runtime.path` is the rule. A
+step with any other `path` gets its own private venv.
+
 ## How updates work
 
 `update.js` runs, in order:
